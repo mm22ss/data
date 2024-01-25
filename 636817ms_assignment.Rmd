@@ -1,0 +1,755 @@
+---
+title: "Gender Statistics and Happiness Index"
+author: "Megha Sajan"
+date: "2023.10.29"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+library(readr)
+#load file
+data1<- read.csv("636817ms_Gender_variable1.csv")
+index<- read.csv("Happiness_score1.csv")
+colnames(index)[1] <- "CountryName"
+merged_data <- merge(index, data1, 
+                     by = "CountryName", no.dups = TRUE)
+
+####################################################################################
+
+#delete columns will all na values
+na_columns <- sapply(merged_data, function(col) all(is.na(col)))
+merged_data <- merged_data[, !na_columns]
+
+# Set a threshold - if 80% of column is na
+threshold <- 29
+# Remove columns with more NA values than the threshold
+merged_data <- merged_data[, colSums(is.na(merged_data)) <= threshold]
+#remove 
+merged_data <- merged_data[, -c(5:18,32,33,58,64:67,126:139)]
+merged_data <- merged_data[, -c(6:17,21:26,28:30,32:34,38:41,47:92)]
+merged_data <- merged_data[, -c(38:46)]
+merged_data <- merged_data[, -c(15:18)]
+merged_data <- merged_data[, -c(3,21,24,25,30:32)]
+
+###################################################################################
+
+#missing values per column
+missing_counts <- colSums(is.na(merged_data))
+print(missing_counts)
+merged_data <- na.omit(merged_data)
+
+#PCA
+num_data<-merged_data[,-c(1:3)]
+
+###################################################################################
+# Create a function to check skewness and apply a transformation
+if (!require("moments")) install.packages("moments")
+library(moments)
+# write a function to conduct skewness check and transform
+set.seed(100)
+skewness_transform <- function(data, threshold = 1) {
+  transformed_data <- data
+  for (var in names(data)) {
+    skew_value <- abs(skewness(data[[var]]))
+    if (skew_value > threshold) {
+      transformed_data[[var]] <- log(data[[var]] + 0.01)
+    }
+  }
+  return(transformed_data)
+}
+
+# Apply the skewness transformation to your dataset
+threshold <- 0.5  
+transformed_data <- skewness_transform(num_data, threshold)
+
+
+#Perform PCA scaled
+principal_component = princomp(num_data, cor = TRUE, scores = TRUE)
+
+#Cumlative VAF -summary rounded
+digits.def<-getOption("digits")
+options(digits=2)
+summary(principal_component)
+options(digits=digits.def)
+
+# kaisers scree plot
+par(mar = c(5, 4, 4, 2) + 0.1)  
+plot(principal_component$sdev^2, type = "b", ylab = "Variance", xlab = "Principal Component", 
+     main = "Kaisers Scree Plot for PCA", ylim = c(0, 20))  
+abline(h = 1, col = "red",lwd=1.5)
+
+#scree plot with percentage of explained variance
+if (!require("factoextra")) install.packages("factoextra")
+if (!require("ggplot2")) install.packages("ggplot2")
+fviz_screeplot(principal_component, addlabels = TRUE, barfill="lightgreen", 
+               linecolor="darkgreen",barcolor="lightgreen")
+
+
+#permuattion test
+# Permutation test
+# Load the required libraries
+library(factoextra)
+
+# Define the permtestPCA function with modifications
+permtestPCA <- function(X, nTests = 100, alpha = 0.05, center.data = TRUE, scale.data = TRUE, ...) {
+  n <- nrow(X)
+  m <- ncol(X)
+  X <- scale(X, center = center.data, scale = scale.data)
+  
+  if (scale.data) {
+    a <- 1 / (n - 1)
+  } else {
+    a <- 1
+  }
+  
+  res.X <- prcomp(X)
+  eigs.X <- res.X$sdev^2
+  eigs.Xperm <- matrix(0, m, nTests)
+  Xperm <- matrix(0, n, m)
+  Xperm[, 1] <- X[, 1]
+  
+  for (i in 1:nTests) {
+    for (j in 2:m) {
+      ind <- sort(runif(n), index.return = TRUE)$ix
+      Xperm[, j] <- X[ind, j]
+    }
+    
+    res.Xperm <- prcomp(Xperm)
+    eigs.Xperm[, i] <- res.Xperm$sdev^2
+  }
+  
+  perc.alpha <- matrix(0, m, 2)
+  
+  for (s in 1:m) {
+    perc.alpha[s, ] <- quantile(eigs.Xperm[s, ], c(alpha/2, 1 - alpha/2))
+  }
+  
+  plot(1:m, eigs.X, type = "b", col = "red", xlab = "Component", ylab = "Eigenvalue", ...)
+  title("Figure 4: Permutation Test for PCA", cex.main = 0.9)
+  lines(1:m, perc.alpha[, 1], type = "b", col = "blue", cex = 0.7)
+  lines(1:m, perc.alpha[, 2], type = "b", col = "blue", cex = 0.7)
+  
+  string1 <- paste("Confidence: ", formatC(alpha/2, digits = 3, width = 5, format = "f"))
+  string2 <- paste("Confidence: ", formatC(1 - alpha/2, digits = 3, width = 5, format = "f"))
+  
+  legend("topright", inset = 0.05, c("Observed", string1, string2), cex = 0.5, lty = c(1, 1, 1), 
+         col = c("red", "blue", "blue"), pch = c("o", "o", "o"))
+  
+  return(perc.alpha)
+}
+
+# Call the modified permtestPCA function with your num_data
+permutation_test <- permtestPCA(num_data)
+
+
+#biplot
+library(factoextra)
+fviz_pca_var(principal_component, col.var = "contrib")
+fviz_pca_var(principal_component, axes = c(2, 3), col.var = "contrib")
+
+
+#bootstrap
+if (!require("boot")) install.packages("boot")
+
+my_boot_pca <- function(data, ind) {
+  res <- princomp(data[ind, ], cor = TRUE)
+  return(res$sdev^2)
+}
+fit.boot  <- boot(data = num_data, statistic = my_boot_pca, R = 1000)
+eigs.boot <- fit.boot$t           
+
+par(mar = c(5, 4, 4, 1) + 0.1)
+# Show histogram of first eigenvalue 
+hist(eigs.boot[, 1], xlab = "Eigenvalue 1", las = 1, col = "lightgreen", 
+     main = "Bootstrap Confidence Interval", breaks = 20, 
+     border = "white")
+perc.alpha <- quantile(eigs.boot[, 1], c(0.025, 1 - 0.025) )
+abline(v = perc.alpha, col = "darkgreen", lwd = 2)
+abline(v = fit.boot$t0[1], col = "red", lwd = 2)
+
+#fit per variable for 4 PC
+correlations_x_pc = cor(num_data, principal_component$scores)[,1:4]
+fit_per_variable = cbind(correlations_x_pc, rowSums(correlations_x_pc^2))
+## colnames(fit_per_variable) <- c("Fit per variable") #may not work
+fit_per_variable = round(fit_per_variable, digits = 2)
+colnames(fit_per_variable) <- c("Comp 1", "Comp 2","Comp 3","Comp 4", "Fit per variable")
+print(fit_per_variable)
+
+#############################################################################
+#LASSO
+if (!require("caret")) {
+  install.packages("caret")
+  library(caret)
+}
+if (!require("glmnet")) {
+  install.packages("glmnet")
+  library(glmnet)
+}
+if (!require("psych")) {
+  install.packages("psych")
+  library(psych)
+}
+if (!require("plotrix")) {
+  install.packages("plotrix")
+  library(plotrix)
+}
+if (!require("caretEnsemble")) {
+  install.packages("caretEnsemble")
+  library(caretEnsemble)
+}
+if (!require("pls")) {
+  install.packages("pls")
+  library(pls)
+}
+
+set.seed(1000)
+train_index <- createDataPartition(merged_data$Happiness_score, p = 0.8, list = FALSE)
+train_data <- merged_data[train_index, ]
+test_data <- merged_data[-train_index, ]
+
+set.seed(1000) 
+
+y <- train_data[,c(2)] # response variable
+x <- train_data[,c(-2)] # 
+# setup control parameter for train data
+fitControl <- trainControl(method = "repeatedcv", 
+                           number = 10, repeats = 5, verboseIter = TRUE)
+
+
+## LASSO Regression ##
+set.seed(1000)
+lasso_1 <- train(Happiness_score ~  SP.POP.DPND + SL.EMP.TOTL.SP.FE.ZS + SL.EMP.TOTL.SP.MA.ZS + SL.EMP.TOTL.SP.ZS + 
+                   NY.GDP.PCAP.CD + FP.CPI.TOTL.ZG + SL.TLF.CACT.FE.ZS + SL.TLF.CACT.MA.ZS + SL.TLF.CACT.ZS + 
+                   SH.MMR.LEVE + SP.POP.TOTL.FE.IN + SP.POP.TOTL.FE.ZS + SP.POP.TOTL.MA.IN + SP.POP.TOTL + 
+                   SG.GEN.PARL.ZS + SL.TLF.CACT.FM.ZS + SG.AGE.RTRE.FL.FE + SG.AGE.RTRE.FL.MA + SP.RUR.TOTL.ZS + 
+                   SL.UEM.TOTL.FE.ZS + SL.UEM.TOTL.MA.ZS + SL.UEM.TOTL.ZS + SP.URB.TOTL.IN.ZS,
+                 train_data,
+                 method = 'glmnet',
+                 na.action = na.exclude,
+                 tuneGrid = expand.grid(alpha = 1,
+                                        lambda = seq(0.0001, 1, length =100)),
+                 trControl = fitControl) # run lasso regression
+
+lasso_1 # bring up result of optimal lambda
+
+# Plot lasso result
+plot(lasso_1)
+
+# Plot lasso coefficient path
+plot(lasso_1$finalModel, xvar = "lambda", label = TRUE) 
+legend("bottomright", lwd = 1, col = 1:15, bg = "white", 
+       legend = pasteCols(t(cbind(1:ncol(x), " ",colnames(x)))), cex = .3)
+
+# Percent of devience explained by lasso
+plot(lasso_1$finalModel, xvar = "dev", label = TRUE) 
+legend("bottomleft", lwd = 1, col = 1:15, bg = "white", 
+       legend = pasteCols(t(cbind(1:ncol(x), " ",colnames(x)))), cex = .3)
+
+# Variance of important chart
+plot(varImp(lasso_1, scale = TRUE))
+
+# 10-cv to find optimal lambda for lasso using glmnet package
+cvfit_lasso <- cv.glmnet(x=as.matrix(x), y, alpha = 1,
+                         type.measure = "mse", nfolds = 10) 
+print(cvfit_lasso) #bring up result of optimal lambda 
+plot(cvfit_lasso) # plot MSE for various lambdas from 10 fold cv
+coef(cvfit_lasso) # coefficient for lasso
+
+###############################################################################
+
+#PREDICTION
+# Fit principal component regression in the training set (3.3)
+set.seed(1000)
+pcr_g <- pcr(Happiness_score ~  SP.POP.DPND + SL.EMP.TOTL.SP.FE.ZS + SL.EMP.TOTL.SP.MA.ZS + SL.EMP.TOTL.SP.ZS + 
+               NY.GDP.PCAP.CD + FP.CPI.TOTL.ZG + SL.TLF.CACT.FE.ZS + SL.TLF.CACT.MA.ZS + SL.TLF.CACT.ZS + 
+               SH.MMR.LEVE + SP.POP.TOTL.FE.IN + SP.POP.TOTL.FE.ZS + SP.POP.TOTL.MA.IN + SP.POP.TOTL + 
+               SG.GEN.PARL.ZS + SL.TLF.CACT.FM.ZS + SG.AGE.RTRE.FL.FE + SG.AGE.RTRE.FL.MA + SP.RUR.TOTL.ZS + 
+               SL.UEM.TOTL.FE.ZS + SL.UEM.TOTL.MA.ZS + SL.UEM.TOTL.ZS + SP.URB.TOTL.IN.ZS,
+             validation = NULL, scale = TRUE, data = train_data) # turn off scaling if want to use CV
+# Load the prediction dataset
+prediction_data1 <- read.csv("Prediction.csv")
+
+# List of column names to keep
+columns_to_keep <- c("CountryName","CountryCode",
+  "SP.POP.DPND", "SL.EMP.TOTL.SP.FE.ZS", "SL.EMP.TOTL.SP.MA.ZS","SL.EMP.TOTL.SP.ZS","NY.GDP.PCAP.CD","FP.CPI.TOTL.ZG","SL.TLF.CACT.FE.ZS","SL.TLF.CACT.MA.ZS","SL.TLF.CACT.ZS","SH.MMR.LEVE","SP.POP.TOTL.FE.IN","SP.POP.TOTL.FE.ZS","SP.POP.TOTL.MA.IN",
+  "SP.POP.TOTL","SG.GEN.PARL.ZS","SL.TLF.CACT.FM.ZS","SG.AGE.RTRE.FL.FE","SG.AGE.RTRE.FL.MA",
+  "SP.RUR.TOTL.ZS","SL.UEM.TOTL.FE.ZS","SL.UEM.TOTL.MA.ZS","SL.UEM.TOTL.ZS","SP.URB.TOTL.IN.ZS")
+
+# Select only the desired columns from the data frame
+prediction_data1 <- prediction_data1[, columns_to_keep]
+
+
+# Fit the PCR model to the prediction data
+pcr_predictions1 <- predict(pcr_g, newdata = prediction_data1, ncomp = 4)
+predicted_data12 <- data.frame(COUNTRY = prediction_data1$CountryName, Predicted_score = pcr_predictions1)
+print(predicted_data12)
+
+
+# Fit the linear model to the prediction data
+lm_predictions1 <- predict(lasso_1, newdata = prediction_data1, ncomp = 4)
+lm_data12 <- data.frame(COUNTRY = prediction_data1$CountryName, Predicted_score = lm_predictions1)
+print(lm_data12)
+
+# Actual happiness scores for the countries 2023
+actual_scores <- c(6.13, 6.58, 5.56)  
+
+# Calculate RMSE for PCR
+rmse_pcr <- sqrt(mean((actual_scores - predicted_data12$Happiness_score.4.comps)^2))
+
+# Calculate RMSE for Lasso
+rmse_lasso <- sqrt(mean((actual_scores - lm_data12$Predicted_score)^2))
+rmse_pcr
+rmse_lasso
+
+```
+
+## I. Introduction
+The pursuit of gender equality and the empowerment of women stands as a cornerstone of sustainable development, highlighted by the United Nations (UN) through its fifth Sustainable Development Goal (SDG).Recognizing the crucial role of gender equality, the analysis investigates the key factors associated with a nation's happiness index. The goal is to inform policy decisions and explore the impact of gender-related statistics on a nation's overall happiness.
+
+
+## II. Data
+The analysis is based on a dataset comprising 44 countries and 23 gender-specific socio-economic and demographic variables sourced from the World Bank data and the World Happiness Report, merged for comprehensive insights.Data preparation is a critical step in the analysis. Columns with more than 80% missing values were removed to ensure data integrity. Additionally, four countries with missing values were excluded from the analysis.The 23 selected columns were chosen based on their direct relevance to the research question, emphasizing variables related to gender equality, demographics, and happiness to align with the study's objectives.This focused selection minimizes the risk of over-fitting and maintains a balance between complexity and interpretability in the subsequent analysis.Skewness of each variable is checked and transformed. If the absolute value of skewness is larger than 0.5, the variable's logarithm is taken.To gain insights into the relationships between variables, a correlogram was constructed, as shown in *Figure 1* *(appendix)*. The correlogram visually represents correlations among variables and provides valuable insights into underlying data patterns.
+
+
+## III. Methods
+Principal Component Analysis (PCA) is a dimensionality reduction technique used to uncover the underlying structure within a dataset while retaining most of its variance and information. PCA begins by calculating the covariance matrix of the original variables, which measures the relationships between these variables.It then finds the eigenvectors and eigenvalues of this covariance matrix. The eigenvectors represent the principal components, while the eigenvalues indicate the amount of variance explained by each principal component.Each component is a linear combination of features:
+$Z_j = \gamma T_jX$ , where X is an n × p data set, j = 1, . . . , p. 
+Where the first loading vector $\gamma_1 = (\gamma_{11}, \gamma_{21}, ... , \gamma_{p1})T$.
+To determine the optimal number of components, several methods can be employed. Cumulative Variance Explained assess the cumulative variance explained to retain components that capture the majority of the total variance.Scree Plot utilize a Scree Plot to identify the "elbow" point, where eigenvalues level off. Kaiser's Rule consider components with eigenvalues exceeding one. Robustness is crucial for PCA components. Permutation tests can be applied to evaluate whether the observed variation explained by a principal component is statistically significant. It assesses whether components are the result of random chance.The stability of principal components depends on the robustness of true eigenvalues. Bootstrap resampling is used to assess whether the variance explained by the components is robust. It involves repeated selection of samples from the dataset with replacement to calculate variance estimates.Biplots are used for visualizing the relationship between variables and observations in PCA. They display both the principal components and the original variables in a single plot, facilitating the interpretation of variable loadings and their impact on the principal components. Loadings close to –1 or 1 indicate that the variables strongly influence the component.
+
+Lasso (Least Absolute Shrinkage and Selection Operator) regression is a penalized regression technique used for feature selection and regularization.Lasso regression helps mitigate multicollinearity among variables and simplifies the model. It enhances predictive performance, especially in high-dimensional datasets. Lasso selects relevant variables while forcing the coefficients of less important variables to be exactly zero.It introduces a regularization term to the regression equation, controlling the model complexity.The predictive performance of the Lasso regression model is evaluated using metrics such as R-squared ($R^{2}$) and Root Mean Squared Error (RMSE). Higher $R^{2}$ values indicate better variance explanation in the dependent variable, while lower RMSE values imply higher prediction accuracy.The dataset was divided into training and test(20%).All numeric variables from the original dataset were utilized as predictor variables, and the "Happiness score" was selected as the response variable for the regression models. Lasso regression was performed using the training dataset. The regularization parameter (lambda) for the lasso model was optimized.
+
+An out-of-sample prediction exercise will be conducted using three countries.This exercise will allow for the assessment and comparison of predictive performance between the PCA regression model and the Lasso regression model. Metrics such as $R^{2}$ and RMSE will be used to evaluate and compare the models in their ability to predict the Happiness Index.
+
+
+## IV. Result
+The correlogram *figure 1* *(appendix)*reveals several significant correlations between variables and the Happiness Index. Happiness Index shows a positive correlation with variables such as GDP, the proportion of women in parliament, mandatory retirement age in males, and urban population. An increase in these variables tends to lead to higher Happiness scores.Conversely, the Happiness Index displays negative correlations with variables such as rural population percentage and age dependency ratio. A rise in these variables is associated with lower Happiness scores.These correlations provide valuable initial insights into the factors influencing a country's Happiness Index. Further analysis will delve into these relationships and their implications.
+
+In accordance to Kaisers rule, components with a standard deviation greater than 1 is retained shown by 5 components above the red line on *figure 5*. From *table 5* *(appendix)* Cumlative VAF, 4 components collectively explain 72.7% of variance from the original dataset. A permutation test was performed to establish a clear boundary for component selection. *figure 4* shows 4 components to be statistically significant, while Component 5 fell within the confidence interval of the permutation test, indicating its lack of significance. Hence,4 components were chosen for further analysis, cumulatively capturing 72.7% of the variation in the dataset. 
+
+
+```{r, echo=FALSE,fig.width=8, fig.height=3.5,fig.show="asis",results='hide'}
+# Set the filename for saving numerical output
+output_file <- "numerical_output.txt"
+
+# Open the sink to save output to a file
+sink(output_file)
+
+# Figure 5
+par(mfrow = c(1,2))
+par(mar = c(5, 4, 4, 2) + 0.1)  
+
+# Permutation test
+# Load the required libraries
+library(factoextra)
+
+# Define the permtestPCA function with modifications
+permtestPCA <- function(X, nTests = 100, alpha = 0.05, center.data = TRUE, scale.data = TRUE, ...) {
+  n <- nrow(X)
+  m <- ncol(X)
+  X <- scale(X, center = center.data, scale = scale.data)
+  
+  if (scale.data) {
+    a <- 1 / (n - 1)
+  } else {
+    a <- 1
+  }
+  
+  res.X <- prcomp(X)
+  eigs.X <- res.X$sdev^2
+  eigs.Xperm <- matrix(0, m, nTests)
+  Xperm <- matrix(0, n, m)
+  Xperm[, 1] <- X[, 1]
+  
+  for (i in 1:nTests) {
+    for (j in 2:m) {
+      ind <- sort(runif(n), index.return = TRUE)$ix
+      Xperm[, j] <- X[ind, j]
+    }
+    
+    res.Xperm <- prcomp(Xperm)
+    eigs.Xperm[, i] <- res.Xperm$sdev^2
+  }
+  
+  perc.alpha <- matrix(0, m, 2)
+  
+  for (s in 1:m) {
+    perc.alpha[s, ] <- quantile(eigs.Xperm[s, ], c(alpha/2, 1 - alpha/2))
+  }
+  
+  plot(1:m, eigs.X, type = "b", col = "red", xlab = "Component", ylab = "Eigenvalue", ...)
+  title("Figure 4: Permutation Test for PCA", cex.main = 0.9)
+  lines(1:m, perc.alpha[, 1], type = "b", col = "blue", cex = 0.7)
+  lines(1:m, perc.alpha[, 2], type = "b", col = "blue", cex = 0.7)
+  
+  string1 <- paste("Confidence: ", formatC(alpha/2, digits = 3, width = 5, format = "f"))
+  string2 <- paste("Confidence: ", formatC(1 - alpha/2, digits = 3, width = 5, format = "f"))
+  
+  legend("topright", inset = 0.05, c("Observed", string1, string2), cex = 0.5, lty = c(1, 1, 1), 
+         col = c("red", "blue", "blue"), pch = c("o", "o", "o"))
+  
+  return(perc.alpha)
+}
+
+# Call the modified permtestPCA function with your num_data
+permutation_test <- permtestPCA(num_data)
+
+# kaisers scree plot
+plot(principal_component$sdev^2, type = "b", ylab = "Variance", xlab = "Principal Component", 
+     main = "Figure 5 : Kaisers Scree Plot for PCA", ylim = c(0, 20))  
+abline(h = 1, col = "red", lwd = 1.5)
+
+
+```
+
+The bootstrap technique is applied to test the data, trying to find the total variance explained by the first component. The variance can be found by taking the eigenvalue of the first component and dividing it by the sum of eigenvalue of all components.  *Figure 6*, shows that the first component explains 30% of the variances, which lies inside of the 95% confidence interval bound,[6.3,8.3]. The result indicates that the eigenvalue for PC1 is robust. 
+
+In *Figure 8*, the biplot illustrates the relationships between the principal components and the variables. Each arrow in the biplot represents a variable, and its direction and length indicate its association with the components. Notably, Component 1 is characterized by variables such as *SL.EMP.TOTL.SP.ZS*, *SL.EMP.TOTL.SP.MA.ZS*, *SL.EMP.TOTL.SP.FE.ZS*, and *SL.TLF.CACT.ZS*, which are related to employment, labor force participation, and economic indicators. This implies its representation of economic and labor force characteristics. Component 2 is primarily linked to *SP.POP.TOTL.FE.IN*, *SP.POP.TOTL.FE.ZS*, *SP.POP.TOTL.MA.IN*, *SP.POP.TOTL*, *SP.POP.TOTL*, *SL.TLF.CACT.FM.ZS*, and *SL.TLF.CACT.MA.ZS*, reflecting its role in population, gender demographics, and labor force participation—population and gender-related factors. Component 3 pertains to *SP.URB.TOTL.IN.ZS* and *SP.RUR.TOTL.ZS*, depicting urbanization and rural aspects. Lastly, Component 4 is associated with variables like *SH.MMR.LEVE*, *SG.AGE.RTRE.FE*, and *SG.AGE.RTRE.MA*, potentially signifying policies and demographics related to maternity and retirement. In "Fit per Variable" *Table 6**(appendix)*, it's evident that a significant 96% of the variance of the variable *SL.EMP.TOTL.SP.ZS* is explained by these components, underlining their substantial explanatory power for this particular variable.
+
+```{r , echo=FALSE,fig.width=9, fig.height=4}
+
+
+# Load the gridExtra package
+if (!require("gridExtra")) {
+  install.packages("gridExtra")
+}
+library(gridExtra)
+library(factoextra)
+
+# Create the two plots
+plot1 <- fviz_pca_var(principal_component, col.var = "contrib", repel = TRUE, col.ind = "black",labelsize = 3)
+plot2 <- fviz_pca_var(principal_component, axes = c(3, 4), col.var = "contrib", repel = TRUE, col.ind = "black",labelsize = 3)
+
+# Arrange the two plots side by side
+grid.arrange(plot1, plot2, ncol = 2)
+
+```
+When predicting using lasso, the importance plot showed *SL.UEM.TOTL.ZS* to be most important followed by *SL.UEM.TOTL.FE.ZS* and *SL.TLF.CACT.ZS*.These variables have most influence in predicting happiness scores.
+The model produced two important lambda values:Lambda min and Lambda 1se *table 6*.When lambda is set to lambda.min, the lasso model minimizes the Mean Squared Error (MSE) and includes a smaller number of predictor variables.PCR model was then built using these three selected components. 
+
+| Lasso                    |     |
+|:------------------------:|----:|
+|Lambda                    | 0.03|
+|Alpha                     | 1   |
+: Lambda and Alpha values
+
+Both the lasso and PCR models were used to predict the "Happiness score" for an out-of-sample test set. The Root Mean Squared Error (RMSE) was calculated to assess the prediction accuracy of the models.Happiness score for Croatia, Costa Rica, and Peru was not available in the dataset, and values of 6.13, 6.58, and 5.56 were used for these countries based on external data for the year 2023.
+Lower RMSE values are preferable because they indicate a smaller average error in the predictions. Therefore, the PCR model appears to be performing slightly better in this specific context, as it has a lower RMSE compared to the Lasso model.
+
+|           | Lasso    |   PCR  |
+|:--------: |:--------:|:------:|
+| RMSE      | 0.35     |  0.63  |
+: RMSE values
+
+
+|     Country           | Predicted score |
+|:---------------------:|:---------------:|
+|   Costa Rica          |     5.78        |
+|   Croatia             |     6.23        |
+|   Peru                |     5.92        |
+
+: Happiness score Predictions using lasso
+
+
+|     Country           | Predicted score |
+|:---------------------:|:---------------:|
+|   Costa Rica          |     6.44        |
+|   Croatia             |     5.87        |
+|   Peru                |     6.33        |
+
+: Happiness score Predictions using PCR
+
+One key distinction between Lasso and PCR is their approach to variable selection. Lasso naturally performs feature selection by shrinking some coefficients to zero, resulting in a sparse model. In contrast, PCR creates linear combinations of all variables.Hence, PCR may perform better as no variables are dropped.
+
+## V. Conclusions and Limitations
+
+In this analysis, the dataset from the World Bank Gender statistics was employed, with the goal of applying dimension reduction through principal component analysis (PCA). The determination of the optimal number of components was based on a comparison of results using Kaiser's rule, the elbow method, and a permutation test, drawing a conclusion that 3 components offered the most effective explanation for the variables. 
+It's important to acknowledge certain limitations of this analysis. Firstly, the dataset is based on available information and may not cover all pertinent variables.The analysis focused on the variables available in the dataset and may not encompass all relevant factors affecting happiness. Factors like cultural, political, or historical context were not considered, which can significantly influence a nation's happiness.The analysis provides valuable insights into gender dynamics, but the causal relationships between variables and happiness require further research. This study establishes associations but does not prove causation. The inclusion of more countries and the consistent tracking of gender-related indicators over time would enhance the quality of analysis. Based on the findings, consider policy recommendations. Governments should focus on policies that enhance gender equality, economic development, and urbanization to improve overall happiness. Investing in family-friendly policies, social safety nets, and educational opportunities can also contribute to national happiness.
+
+## *Appendix : Figures and tables*
+
+
+
+```{r , echo=FALSE,fig.width=8, fig.height=3.5}
+# Figure 1
+# Create a correlation matrix
+num_data1<-merged_data[,-c(1,3)]
+
+# Figure 5
+par(mfrow = c(1,2))
+par(mar = c(5, 4, 4, 2) + 0.1) 
+
+#correlogram
+if (!require("corrplot")) install.packages("corrplot")
+##correlogram with circle ##
+correlation_matrix <- cor(num_data1)
+rounded_correlation_matrix <- round(correlation_matrix, 2)
+corrplot(rounded_correlation_matrix, method = "circle", type = "upper", 
+         tl.cex = 0.4, number.cex = 0.3)
+
+#bootstrap
+if (!require("boot")) install.packages("boot")
+
+my_boot_pca <- function(data, ind) {
+  res <- princomp(data[ind, ], cor = TRUE)
+  return(res$sdev^2)
+}
+fit.boot  <- boot(data = num_data, statistic = my_boot_pca, R = 1000)
+eigs.boot <- fit.boot$t           
+
+# Show histogram of first eigenvalue 
+hist(eigs.boot[, 1], xlab = "Eigenvalue 1", las = 1, col = "lightgreen", 
+     main = "Figure 6 : Bootstrap Confidence Interval",cex.main=0.8, breaks = 20, 
+     border = "white")
+perc.alpha <- quantile(eigs.boot[, 1], c(0.025, 1 - 0.025) )
+abline(v = perc.alpha, col = "darkgreen", lwd = 2)
+abline(v = fit.boot$t0[1], col = "red", lwd = 2)
+
+
+```
+
+
+```{r , echo=FALSE}
+
+
+## figure 4: cumulative propotion
+summary_pca<- summary(principal_component)
+
+if (!require("kableExtra")) {
+  install.packages("kableExtra")
+  library(kableExtra)
+}
+
+if (!require("knitr")) {
+  install.packages("knitr")
+  library(knitr)
+}
+
+
+
+# Create the table with component statistics
+table.components <- data.frame(
+  Component = 1:5,
+  `Standard deviation` = round(c(2.6, 2.19, 1.68, 1.475, 1.288),2),
+  `Proportion of Variance` = round(c(0.3, 0.21, 0.12, 0.095, 0.072),2),
+  `Cumulative Proportion` = round(c(0.3, 0.51, 0.63, 0.727, 0.799),2)
+)
+custom_col_names <- c("Component", "Standard deviation", "Proportion of Variance", "Cumulative Proportion")
+
+# Create the table using kable
+kable(table.components, format = "markdown", col.names = custom_col_names, row.names = FALSE, caption = "cumlative VAF")
+
+```
+
+
+
+```{r , echo=FALSE}
+## figure 7: Loadings for component 1
+if (!require("kableExtra")) {
+  install.packages("kableExtra")
+  library(kableExtra)
+}
+
+if (!require("knitr")) {
+  install.packages("knitr")
+  library(knitr)
+}
+
+loading.components <- data.frame(
+  Variables = c(
+    "SP.POP.DPND",
+    "SL.EMP.TOTL.SP.FE.ZS",
+    "SL.EMP.TOTL.SP.MA.ZS",
+    "SL.EMP.TOTL.SP.ZS",
+    "NY.GDP.PCAP.CD",
+    "FP.CPI.TOTL.ZG",
+    "SL.TLF.CACT.FE.ZS",
+    "SL.TLF.CACT.MA.ZS",
+    "SL.TLF.CACT.ZS",
+    "SH.MMR.LEVE",
+    "SP.POP.TOTL.FE.IN",
+    "SP.POP.TOTL.FE.ZS",
+    "SP.POP.TOTL.MA.IN",
+    "SP.POP.TOTL",
+    "SG.GEN.PARL.ZS",
+    "SL.TLF.CACT.FM.ZS",
+    "SG.AGE.RTRE.FL.FE",
+    "SG.AGE.RTRE.FL.MA",
+    "SP.RUR.TOTL.ZS",
+    "SL.UEM.TOTL.FE.ZS",
+    "SL.UEM.TOTL.MA.ZS",
+    "SL.UEM.TOTL.ZS",
+    "SP.URB.TOTL.IN.ZS"
+  ),
+  Comp1 = c(0.33, 0.91, 0.72, 0.96, 0.23, -0.34, 0.86, 0.60, 0.91, -0.36, -0.29, -0.24, -0.29, -0.29, 0.34, 0.64, 0.07, -0.06, 0.09, -0.71, -0.69, -0.70, -0.09),
+  Comp2 = c(0.47, -0.15, 0.42, 0.09, -0.61, 0.07, -0.21, 0.40, 0.03, -0.03, 0.62, -0.12, 0.62, 0.62, -0.40, -0.42, -0.69, -0.74, 0.75, -0.17, -0.25, -0.23, -0.75),
+  Comp3 = c(0.54, 0.16, -0.28, -0.09, -0.44, 0.20, 0.20, -0.27, -0.05, 0.08, -0.57, 0.54, -0.57, -0.57, -0.33, 0.30, -0.21, -0.21, 0.45, 0.13, 0.18, 0.18, -0.45),
+  Comp4 = c(0.23, 0.16, -0.37, -0.12, 0.17, -0.11, 0.09, -0.52, -0.23, 0.29, 0.34, 0.50, 0.33, 0.34, -0.09, 0.35, 0.37, 0.32, 0.16, -0.51, 0.37, -0.28, -0.16),
+  Fit_per_var = c(0.68, 0.90, 0.91, 0.96, 0.65, 0.17, 0.83, 0.86, 0.87, 0.22, 0.91, 0.61, 0.91, 0.91, 0.39, 0.81, 0.66, 0.70, 0.81, 0.81, 0.64, 0.72, 0.81)
+)
+
+kable(loading.components, format = "markdown", row.names = FALSE, caption = "Loadings for selected components")
+
+
+
+```
+
+
+## *Appendix 2: Code*
+
+```{r, fig.show='hide', message=FALSE, warning=FALSE, results=FALSE, eval=FALSE}
+#delete columns will all na values
+na_columns <- sapply(merged_data, function(col) all(is.na(col)))
+merged_data <- merged_data[, !na_columns]
+# Set a threshold - if 80% of column is na
+threshold <- 29
+# Remove columns with more NA values than the threshold
+merged_data <- merged_data[, colSums(is.na(merged_data)) <= threshold]
+#remove 
+merged_data <- merged_data[, -c(5:18,32,33,58,64:67,126:139)]
+merged_data <- merged_data[, -c(6:17,21:26,28:30,32:34,38:41,47:92)]
+merged_data <- merged_data[, -c(38:46)]
+merged_data <- merged_data[, -c(15:18)]
+merged_data <- merged_data[, -c(3,21,24,25,30:32)]
+merged_data <- na.omit(merged_data)
+###################################################################################
+num_data<-merged_data[,-c(1:3)]
+# Create a function to check skewness and apply a transformation
+if (!require("moments")) install.packages("moments")
+library(moments)
+# write a function to conduct skewness check and transform
+set.seed(100)
+skewness_transform <- function(data, threshold = 1) {
+  transformed_data <- data
+  for (var in names(data)) {
+    skew_value <- abs(skewness(data[[var]]))
+    if (skew_value > threshold) {
+      transformed_data[[var]] <- log(data[[var]] + 0.01)
+    }
+  }
+  return(transformed_data)
+}
+# Apply the skewness transformation to your dataset
+threshold <- 0.5  
+transformed_data <- skewness_transform(num_data, threshold)
+#Perform PCA scaled
+principal_component = princomp(num_data, cor = TRUE, scores = TRUE)
+#Cumlative VAF -summary rounded
+digits.def<-getOption("digits")
+options(digits=2)
+summary(principal_component)
+options(digits=digits.def)
+
+# kaisers scree plot
+par(mar = c(5, 4, 4, 2) + 0.1)  
+plot(principal_component$sdev^2, type = "b", ylab = "Variance", xlab = "Principal Component", 
+     main = "Kaisers Scree Plot for PCA", ylim = c(0, 20))  
+abline(h = 1, col = "red",lwd=1.5)
+#permuattion test
+par(mfrow = c(1,1))
+source("permtestPCA.R") 
+permtestPCA(num_data)
+permutation_test = permtestPCA(num_data)
+#biplot
+library(factoextra)
+fviz_pca_var(principal_component, col.var = "contrib")
+fviz_pca_var(principal_component, axes = c(2, 3), col.var = "contrib")
+##bootstrap##
+if (!require("boot")) install.packages("boot")
+my_boot_pca <- function(data, ind) {
+  res <- princomp(data[ind, ], cor = TRUE)
+  return(res$sdev^2)
+}
+fit.boot  <- boot(data = num_data, statistic = my_boot_pca, R = 1000)
+eigs.boot <- fit.boot$t           
+
+par(mar = c(5, 4, 4, 1) + 0.1)
+# Show histogram of first eigenvalue 
+hist(eigs.boot[, 1], xlab = "Eigenvalue 1", las = 1, col = "lightgreen", 
+     main = "Bootstrap Confidence Interval", breaks = 20, 
+     border = "white")
+perc.alpha <- quantile(eigs.boot[, 1], c(0.025, 1 - 0.025) )
+abline(v = perc.alpha, col = "darkgreen", lwd = 2)
+abline(v = fit.boot$t0[1], col = "red", lwd = 2)
+
+#fit per variable for 4 PC#
+correlations_x_pc = cor(num_data, principal_component$scores)[,1:4]
+fit_per_variable = cbind(correlations_x_pc, rowSums(correlations_x_pc^2))
+fit_per_variable = round(fit_per_variable, digits = 2)
+colnames(fit_per_variable) <- c("Comp 1", "Comp 2","Comp 3","Comp 4", "Fit per variable")
+print(fit_per_variable)
+#############################################################################
+##LASSO##
+set.seed(1000)
+train_index <- createDataPartition(merged_data$Happiness_score, p = 0.8, list = FALSE)
+train_data <- merged_data[train_index, ]
+test_data <- merged_data[-train_index, ]
+set.seed(1000) 
+y <- train_data[,c(2)] # response variable
+x <- train_data[,c(-2)] #predictors
+
+# setup control parameter for train data
+fitControl <- trainControl(method = "repeatedcv", 
+                           number = 10, repeats = 5, verboseIter = TRUE)
+## LASSO Regression ##
+set.seed(1000)
+lasso_1 <- train(Happiness_score ~  SP.POP.DPND + SL.EMP.TOTL.SP.FE.ZS + SL.EMP.TOTL.SP.MA.ZS + SL.EMP.TOTL.SP.ZS + 
+                   NY.GDP.PCAP.CD + FP.CPI.TOTL.ZG + SL.TLF.CACT.FE.ZS + SL.TLF.CACT.MA.ZS + SL.TLF.CACT.ZS + 
+                   SH.MMR.LEVE + SP.POP.TOTL.FE.IN + SP.POP.TOTL.FE.ZS + SP.POP.TOTL.MA.IN + SP.POP.TOTL + 
+                   SG.GEN.PARL.ZS + SL.TLF.CACT.FM.ZS + SG.AGE.RTRE.FL.FE + SG.AGE.RTRE.FL.MA + SP.RUR.TOTL.ZS + 
+                   SL.UEM.TOTL.FE.ZS + SL.UEM.TOTL.MA.ZS + SL.UEM.TOTL.ZS + SP.URB.TOTL.IN.ZS,
+                 train_data,
+                 method = 'glmnet',
+                 na.action = na.exclude,
+                 tuneGrid = expand.grid(alpha = 1,
+                                        lambda = seq(0.0001, 1, length =100)),
+                 trControl = fitControl) # run lasso regression
+
+lasso_1 # bring up result of optimal lambda
+# Plot lasso result
+plot(lasso_1)
+# Percent of devience explained by lasso
+plot(lasso_1$finalModel, xvar = "dev", label = TRUE) 
+legend("bottomleft", lwd = 1, col = 1:15, bg = "white", 
+       legend = pasteCols(t(cbind(1:ncol(x), " ",colnames(x)))), cex = .3)
+
+# Variance of important chart
+plot(varImp(lasso_1, scale = TRUE))
+# 10-cv to find optimal lambda for lasso using glmnet package
+cvfit_lasso <- cv.glmnet(x=as.matrix(x), y, alpha = 1,
+                         type.measure = "mse", nfolds = 10) 
+print(cvfit_lasso) #bring up result of optimal lambda 
+plot(cvfit_lasso) # plot MSE for various lambdas from 10 fold cv
+coef(cvfit_lasso) # coefficient for lasso
+###############################################################################
+#PREDICTION
+# Fit principal component regression in the training set 
+set.seed(1000)
+pcr_g <- pcr(Happiness_score ~  SP.POP.DPND + SL.EMP.TOTL.SP.FE.ZS + SL.EMP.TOTL.SP.MA.ZS + SL.EMP.TOTL.SP.ZS + 
+               NY.GDP.PCAP.CD + FP.CPI.TOTL.ZG + SL.TLF.CACT.FE.ZS + SL.TLF.CACT.MA.ZS + SL.TLF.CACT.ZS + 
+               SH.MMR.LEVE + SP.POP.TOTL.FE.IN + SP.POP.TOTL.FE.ZS + SP.POP.TOTL.MA.IN + SP.POP.TOTL + 
+               SG.GEN.PARL.ZS + SL.TLF.CACT.FM.ZS + SG.AGE.RTRE.FL.FE + SG.AGE.RTRE.FL.MA + SP.RUR.TOTL.ZS + 
+               SL.UEM.TOTL.FE.ZS + SL.UEM.TOTL.MA.ZS + SL.UEM.TOTL.ZS + SP.URB.TOTL.IN.ZS,
+             validation = NULL, scale = TRUE, data = train_data) 
+# Load the prediction dataset
+prediction_data1 <- read.csv("Prediction.csv")
+# Fit the PCR model to the prediction data
+pcr_predictions1 <- predict(pcr_g, newdata = prediction_data1, ncomp = 4)
+predicted_data12 <- data.frame(COUNTRY = prediction_data1$CountryName, Predicted_score = pcr_predictions1)
+print(predicted_data12)
+# Fit the linear model to the prediction data
+lm_predictions1 <- predict(lasso_1, newdata = prediction_data1, ncomp = 4)
+lm_data12 <- data.frame(COUNTRY = prediction_data1$CountryName, Predicted_score = lm_predictions1)
+print(lm_data12)
+# Actual happiness scores for the countries 2023
+actual_scores <- c(6.13, 6.58, 5.56)  
+# Calculate RMSE for PCR
+rmse_pcr <- sqrt(mean((actual_scores - predicted_data12$Happiness_score.4.comps)^2))
+# Calculate RMSE for Lasso
+rmse_lasso <- sqrt(mean((actual_scores - lm_data12$Predicted_score)^2))
+```
